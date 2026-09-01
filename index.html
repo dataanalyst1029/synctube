@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SyncTube — Watch &amp; Listen Together</title>
+<meta name="description" content="Watch YouTube videos and listen to music together, in sync, with friends. No account, no server.">
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#14171c; --panel2:#1b1f26; --line:#262c35;
+    --txt:#e8ecf1; --dim:#8b95a3; --accent:#ff3d54; --accent2:#4d9fff;
+    --ok:#33d17a; --warn:#f5b431; --bad:#ff5a5a;
+    --r:12px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--txt);
+    font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  button,input,select{font:inherit;color:inherit}
+  button{cursor:pointer;border:none;background:none}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#2c333d;border-radius:10px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* ---------- top bar ---------- */
+  header{
+    display:flex;align-items:center;gap:12px;padding:10px 14px;
+    background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;flex-wrap:wrap
+  }
+  .brand{display:flex;align-items:center;gap:8px;font-weight:700;letter-spacing:.2px}
+  .brand .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent)}
+  .room-chip{
+    display:flex;align-items:center;gap:8px;background:var(--panel2);
+    border:1px solid var(--line);border-radius:999px;padding:5px 6px 5px 12px;font-size:13px
+  }
+  .room-chip b{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px}
+  .btn{
+    background:var(--panel2);border:1px solid var(--line);border-radius:9px;
+    padding:8px 12px;font-size:13px;font-weight:600;transition:.15s;white-space:nowrap
+  }
+  .btn:hover{background:#232a33;border-color:#39424f}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.primary:hover{filter:brightness(1.1)}
+  .btn.ghost{background:transparent}
+  .btn.sm{padding:5px 9px;font-size:12px}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .spacer{flex:1}
+  .status{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dim)}
+  .status .led{width:8px;height:8px;border-radius:50%;background:var(--warn);transition:.2s}
+  .status.on .led{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .status.off .led{background:var(--bad)}
+  .role{
+    font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;
+    padding:3px 8px;border-radius:6px;background:#2a2130;color:#d9a6ff;border:1px solid #3d2f47
+  }
+  .role.host{background:#2b2418;color:#ffd479;border-color:#4a3c1f}
+
+  /* ---------- layout ---------- */
+  main{flex:1;display:flex;min-height:0}
+  .left{flex:1;display:flex;flex-direction:column;min-width:0;padding:14px;gap:12px;overflow:auto}
+  .right{
+    width:355px;flex:0 0 355px;border-left:1px solid var(--line);
+    background:var(--panel);display:flex;flex-direction:column;min-height:0
+  }
+
+  /* ---------- player ---------- */
+  .stage{position:relative;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line)}
+  .stage .ratio{position:relative;width:100%;padding-top:56.25%}
+  .stage iframe,#player{position:absolute;inset:0;width:100%;height:100%;border:0}
+  .cover{
+    position:absolute;inset:0;display:none;place-items:center;text-align:center;
+    background:radial-gradient(circle at 50% 40%,#1d2430,#0a0c10 70%);color:var(--txt);padding:20px
+  }
+  .cover.show{display:grid}
+  .cover .eq{display:flex;gap:5px;align-items:flex-end;height:46px;justify-content:center;margin-bottom:14px}
+  .cover .eq i{width:7px;background:linear-gradient(var(--accent),#ff8a76);border-radius:3px;animation:eq 1s infinite ease-in-out}
+  .cover .eq i:nth-child(2){animation-delay:.15s}.cover .eq i:nth-child(3){animation-delay:.3s}
+  .cover .eq i:nth-child(4){animation-delay:.45s}.cover .eq i:nth-child(5){animation-delay:.6s}
+  @keyframes eq{0%,100%{height:12px}50%{height:44px}}
+  .cover.paused .eq i{animation-play-state:paused}
+
+  .gate{
+    position:absolute;inset:0;display:grid;place-items:center;z-index:5;
+    background:rgba(6,8,11,.93);backdrop-filter:blur(6px);text-align:center;padding:24px
+  }
+  .gate.hide{display:none}
+  .gate h2{margin:0 0 6px;font-size:20px}
+  .gate p{margin:0 0 16px;color:var(--dim);font-size:13.5px;max-width:360px}
+
+  /* ---------- now playing / controls ---------- */
+  .np{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+  .np .tt{min-width:0;flex:1}
+  .np .tt div:first-child{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .np .tt div:last-child{font-size:12px;color:var(--dim);margin-top:2px}
+  .ctl{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .iconbtn{
+    width:40px;height:40px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+    display:grid;place-items:center;transition:.15s
+  }
+  .iconbtn:hover{background:#242c36}
+  .iconbtn.play{width:48px;height:48px;background:var(--accent);border-color:var(--accent)}
+  .iconbtn svg{width:18px;height:18px;fill:currentColor}
+  .iconbtn.play svg{width:22px;height:22px;fill:#fff}
+  .bar{display:flex;align-items:center;gap:10px;flex:1;min-width:180px}
+  .bar input[type=range]{flex:1;accent-color:var(--accent);height:4px}
+  .time{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .vol{display:flex;align-items:center;gap:7px;width:130px}
+  .vol input{flex:1;accent-color:var(--accent2)}
+
+  .addrow{display:flex;gap:8px}
+  .addrow input{
+    flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:11px 13px;outline:none
+  }
+  .addrow input:focus{border-color:var(--accent2)}
+
+  /* ---------- right panel ---------- */
+  .tabs{display:flex;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .tabs button{
+    flex:1;padding:12px 6px;font-size:13px;font-weight:650;color:var(--dim);
+    border-bottom:2px solid transparent
+  }
+  .tabs button.active{color:var(--txt);border-bottom-color:var(--accent)}
+  .tabs .badge{
+    display:inline-block;min-width:18px;padding:0 5px;margin-left:5px;border-radius:9px;
+    background:var(--panel2);font-size:11px;color:var(--dim)
+  }
+  .pane{flex:1;overflow:auto;padding:12px;display:none;flex-direction:column;gap:8px}
+  .pane.active{display:flex}
+  .empty{color:var(--dim);font-size:13px;text-align:center;padding:26px 10px}
+
+  .item{
+    display:flex;gap:10px;align-items:center;background:var(--panel2);border:1px solid var(--line);
+    border-radius:10px;padding:8px;transition:.15s
+  }
+  .item:hover{border-color:#3a4351}
+  .item img{width:76px;height:43px;object-fit:cover;border-radius:6px;background:#000;flex:0 0 auto}
+  .item .m{min-width:0;flex:1}
+  .item .m div:first-child{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .m div:last-child{font-size:11.5px;color:var(--dim)}
+  .item .x{color:var(--dim);padding:4px 7px;border-radius:6px;font-size:16px;line-height:1}
+  .item .x:hover{background:#2c343f;color:var(--bad)}
+
+  .person{display:flex;align-items:center;gap:10px;padding:8px 4px}
+  .av{
+    width:32px;height:32px;border-radius:50%;display:grid;place-items:center;
+    font-size:13px;font-weight:700;color:#0b0d10;flex:0 0 auto
+  }
+  .person .n{flex:1;font-size:13.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--dim)}
+
+  #chatlog{flex:1;overflow:auto;display:flex;flex-direction:column;gap:9px;padding:12px}
+  .msg{font-size:13.5px;word-break:break-word}
+  .msg .who{font-weight:700;font-size:12.5px}
+  .msg.sys{color:var(--dim);font-size:12.5px;font-style:italic}
+  .chatbox{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line)}
+  .chatbox input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px;outline:none}
+  .chatpane{padding:0;gap:0}
+  .chatpane.active{display:flex}
+
+  /* ---------- modal ---------- */
+  .modal{position:fixed;inset:0;background:rgba(4,6,9,.82);backdrop-filter:blur(8px);display:grid;place-items:center;z-index:50;padding:20px}
+  .modal.hide{display:none}
+  .card{
+    width:100%;max-width:430px;background:var(--panel);border:1px solid var(--line);
+    border-radius:16px;padding:26px
+  }
+  .card h1{margin:0 0 4px;font-size:23px}
+  .card .sub{color:var(--dim);font-size:13.5px;margin:0 0 20px}
+  .card label{display:block;font-size:12px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.7px;margin:14px 0 6px}
+  .card input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;outline:none}
+  .card input:focus{border-color:var(--accent2)}
+  .card .row{display:flex;gap:9px;margin-top:20px}
+  .card .row .btn{flex:1;padding:12px;justify-content:center;text-align:center}
+  .hr{display:flex;align-items:center;gap:10px;color:var(--dim);font-size:11.5px;margin:18px 0 0}
+  .hr:before,.hr:after{content:"";flex:1;height:1px;background:var(--line)}
+  .toast{
+    position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(80px);
+    background:#20262f;border:1px solid var(--line);padding:11px 18px;border-radius:999px;
+    font-size:13.5px;z-index:99;transition:.25s;opacity:0;pointer-events:none;box-shadow:0 8px 30px rgba(0,0,0,.5)
+  }
+  .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+  .note{font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:flex-start}
+  .switch{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--dim);cursor:pointer;user-select:none}
+  .switch input{accent-color:var(--accent)}
+
+  @media (max-width:900px){
+    main{flex-direction:column}
+    .right{width:auto;flex:1 1 auto;border-left:none;border-top:1px solid var(--line);min-height:44vh}
+    .left{flex:0 0 auto;overflow:visible}
+    header{gap:8px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand"><span class="dot"></span>SyncTube</div>
+  <div class="room-chip" id="roomChip" hidden>
+    Room <b id="roomCode">------</b>
+    <button class="btn sm" id="copyLink">Copy invite</button>
+  </div>
+  <span class="role" id="roleTag" hidden>guest</span>
+  <div class="spacer"></div>
+  <button class="btn sm ghost" id="claimHost" hidden>Take over as host</button>
+  <button class="btn sm ghost" id="resyncBtn" hidden>Re-sync</button>
+  <div class="status" id="status"><span class="led"></span><span id="statusTxt">offline</span></div>
+</header>
+
+<main>
+  <section class="left">
+    <div class="stage">
+      <div class="ratio">
+        <div id="player"></div>
+        <div class="cover" id="cover">
+          <div>
+            <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
+            <div style="font-weight:700" id="coverTitle">Audio only</div>
+            <div style="color:var(--dim);font-size:13px;margin-top:4px">Video hidden — sound keeps playing</div>
+          </div>
+        </div>
+        <div class="gate hide" id="gate">
+          <div>
+            <h2 id="gateTitle">Ready to join</h2>
+            <p id="gateText">Browsers block autoplay with sound, so tap once to start playback in sync with the room.</p>
+            <button class="btn primary" id="gateBtn" style="padding:12px 26px">Tap to join &amp; play</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="np">
+      <div class="tt">
+        <div id="npTitle">Nothing playing</div>
+        <div id="npSub">Paste a YouTube link below to start</div>
+      </div>
+      <label class="switch"><input type="checkbox" id="audioOnly"> Audio only</label>
+      <label class="switch" title="Tighter sync = more seeking"><input type="checkbox" id="strict"> Tight sync</label>
+    </div>
+
+    <div class="np ctl">
+      <button class="iconbtn" id="prevBtn" title="Restart track">
+        <svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+      </button>
+      <button class="iconbtn play" id="playBtn" title="Play / pause">
+        <svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="iconbtn" id="nextBtn" title="Next in queue">
+        <svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg>
+      </button>
+      <div class="bar">
+        <span class="time" id="tCur">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" step="1">
+        <span class="time" id="tDur">0:00</span>
+      </div>
+      <div class="vol">
+        <button class="iconbtn" id="muteBtn" style="width:34px;height:34px" title="Mute (local only)">
+          <svg id="volIcon" viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3zm13.5 2a4.5 4.5 0 00-2.5-4v8a4.5 4.5 0 002.5-4z"/></svg>
+        </button>
+        <input type="range" id="vol" min="0" max="100" value="80">
+      </div>
+    </div>
+
+    <div class="addrow">
+      <input id="addInput" placeholder="Paste a YouTube link or video ID  —  youtube.com/watch?v=…, youtu.be/…, /shorts/…" spellcheck="false">
+      <button class="btn primary" id="addBtn">Add</button>
+    </div>
+    <div class="note" id="permNote"></div>
+  </section>
+
+  <aside class="right">
+    <div class="tabs">
+      <button class="active" data-tab="queue">Queue <span class="badge" id="qCount">0</span></button>
+      <button data-tab="chat">Chat <span class="badge" id="cCount">0</span></button>
+      <button data-tab="people">People <span class="badge" id="pCount">1</span></button>
+    </div>
+
+    <div class="pane active" id="pane-queue">
+      <div class="empty" id="qEmpty">Queue is empty.<br>Anyone in the room can add videos.</div>
+      <div id="qList" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
+
+    <div class="pane chatpane" id="pane-chat">
+      <div id="chatlog"></div>
+      <div class="chatbox">
+        <input id="chatInput" placeholder="Message the room…" maxlength="400">
+        <button class="btn primary" id="chatSend">Send</button>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-people">
+      <div id="pList"></div>
+      <div class="hr">room settings</div>
+      <label class="switch" style="padding:10px 4px">
+        <input type="checkbox" id="everyoneCtl"> Let everyone control playback
+      </label>
+      <button class="btn sm ghost" id="renameBtn" style="align-self:flex-start">Change my name</button>
+    </div>
+  </aside>
+</main>
+
+<!-- ---------- join modal ---------- -->
+<div class="modal" id="modal">
+  <div class="card">
+    <h1>Watch &amp; listen together</h1>
+    <p class="sub">YouTube video and music, kept in sync for everyone in the room. No account, no server of your own.</p>
+
+    <label for="nameIn">Your name</label>
+    <input id="nameIn" maxlength="24" placeholder="e.g. Alex">
+
+    <div class="row">
+      <button class="btn primary" id="createBtn">Create a room</button>
+    </div>
+
+    <div class="hr">or join a friend</div>
+
+    <label for="codeIn">Room code</label>
+    <input id="codeIn" maxlength="12" placeholder="ABC123" style="text-transform:uppercase;letter-spacing:3px;font-family:ui-monospace,Menlo,monospace">
+    <div class="row">
+      <button class="btn" id="joinBtn">Join room</button>
+    </div>
+    <div class="note" style="margin-top:16px">Sync runs over a public MQTT relay — anyone with the room code can join, so treat codes as semi-private.</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- sync transport: MQTT over WebSocket. Primary CDN, with a fallback. -->
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"
+        onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js';document.head.appendChild(s);"></script>
+
+<script>
+/* =======================================================================
+   SyncTube — synchronised YouTube playback for 2+ people
+   Transport: MQTT over WebSocket (public broker, retained state topic)
+   No backend of our own. Single static file → works on GitHub Pages.
+   ======================================================================= */
+
+/* ---------------------------- tiny helpers ---------------------------- */
+const $ = id => document.getElementById(id);
+const rand = (n, set = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789') =>
+  Array.from({length:n}, () => set[Math.floor(Math.random()*set.length)]).join('');
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const fmt = s => {
+  if (!isFinite(s) || s < 0) s = 0;
+  s = Math.floor(s);
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  return (h ? h + ':' + String(m).padStart(2,'0') : m) + ':' + String(x).padStart(2,'0');
+};
+let toastTimer;
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function hue(str){ let h = 0; for (const c of str) h = (h*31 + c.charCodeAt(0)) % 360; return h; }
+
+/* ---------------------------- config ---------------------------- */
+const BROKERS = [
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081/mqtt'
+];
+const ROOT       = 'synctube/v1';
+const BEAT_MS    = 2500;   // host state broadcast interval
+const PRES_MS    = 4000;   // presence ping interval
+const PRES_TTL   = 13000;  // presence expiry
+const HOST_TTL   = 14000;  // no host seen for this long → offer takeover
+const DRIFT_LOOSE= 1.2;    // seconds of drift tolerated
+const DRIFT_TIGHT= 0.45;
+
+/* ---------------------------- local identity ---------------------------- */
+const cid = rand(10, 'abcdefghijklmnopqrstuvwxyz0123456789');
+let me   = localStorage.getItem('st.name') || '';
+let room = '';
+let isHost = false;
+
+/* shared, authoritative room state (published retained by the host) */
+let S = {
+  rev: 0, host: '', hostName: '',
+  videoId: null, title: '', playing: false,
+  position: 0, at: 0,            // at = host clock ms when position was sampled
+  queue: [], everyone: false
+};
+
+let mq = null, brokerIx = 0, connected = false, everConnected = false;
+let player = null, ytReady = false, gated = true, pendingLoad = null;
+let offsets = [], clockOffset = 0;      // hostClock ≈ Date.now() + clockOffset
+let lastHostSeen = 0, applying = false, snapTimer = null;
+let idleEnded = false;                   // current track finished, nothing queued
+let lastLoadAt = 0, sawPlaying = false;  // guards against stale ENDED events
+let people = new Map();                  // cid → {name, host, ts}
+let chatCount = 0, unseenChat = 0;
+const titleCache = new Map();
+
+/* =======================================================================
+   YouTube player
+   ======================================================================= */
+window.onYouTubeIframeAPIReady = function(){
+  player = new YT.Player('player', {
+    host: 'https://www.youtube-nocookie.com',
+    playerVars: {
+      autoplay: 0, controls: 1, rel: 0, modestbranding: 1,
+      playsinline: 1, iv_load_policy: 3, fs: 1, origin: location.origin
+    },
+    events: {
+      onReady(){
+        ytReady = true;
+        player.setVolume(Number($('vol').value));
+        if (pendingLoad) { const p = pendingLoad; pendingLoad = null; hardLoad(p.id, p.t, p.play); }
+      },
+      onStateChange: onPlayerState,
+      onError(e){
+        const why = ({2:'bad video id',5:'playback error',100:'video not found / private',
+                      101:'embedding disabled by owner',150:'embedding disabled by owner'})[e.data] || 'error ' + e.data;
+        toast('YouTube: ' + why);
+        if (isHost) setTimeout(nextTrack, 1200);   // don't let the room stall
+      }
+    }
+  });
+};
+(function loadYT(){
+  const s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(s);
+})();
+
+function onPlayerState(e){
+  paintPlayIcon();
+  // Record "this track really started" even during a load-suppression window,
+  // otherwise end-of-track detection never arms.
+  if (e.data === YT.PlayerState.PLAYING) sawPlaying = true;
+  if (applying) return;
+
+  if (isHost){
+    if (e.data === YT.PlayerState.PLAYING){ S.playing = true; publishState(); }
+    if (e.data === YT.PlayerState.PAUSED) { S.playing = false; publishState(); }
+    if (e.data === YT.PlayerState.ENDED)  { if (reallyEnded()) nextTrack(); }
+  } else {
+    // A guest poked their own player — snap back to the room shortly.
+    clearTimeout(snapTimer);
+    snapTimer = setTimeout(() => applyState(S, true), 350);
+  }
+}
+
+/* YouTube re-fires ENDED for the outgoing video just after a load, which would
+   skip the track we just started. Only advance on a genuine end of the current
+   video, and never within 2s of a track change. */
+function reallyEnded(){
+  if (!sawPlaying) return false;                 // this track never actually played
+  if (Date.now() - lastLoadAt < 2000) return false;
+  const d = player.getDuration(), t = player.getCurrentTime();
+  if (!d || !isFinite(t) || t < d - 3) return false;
+  sawPlaying = false;
+  return true;
+}
+
+function hardLoad(id, t, play){
+  if (!ytReady){ pendingLoad = {id, t, play}; return; }
+  applying = true; lastLoadAt = Date.now(); sawPlaying = false;
+  if (play && !gated) player.loadVideoById({videoId:id, startSeconds:Math.max(0,t)});
+  else               player.cueVideoById({videoId:id, startSeconds:Math.max(0,t)});
+  setTimeout(() => { applying = false; }, 1500);   // ride out the old track's tail events
+}
+
+/* =======================================================================
+   URL / id parsing + titles (oEmbed — no API key needed)
+   ======================================================================= */
+function parseVideoId(raw){
+  const s = (raw || '').trim();
+  if (!s) return null;
+  if (/^[\w-]{11}$/.test(s)) return s;
+  let u;
+  try { u = new URL(s.startsWith('http') ? s : 'https://' + s); } catch { return null; }
+  const host = u.hostname.replace(/^www\./,'');
+  if (host === 'youtu.be') return (u.pathname.slice(1).split('/')[0].match(/^[\w-]{11}$/) || [null])[0];
+  if (!/youtube(-nocookie)?\.com$/.test(host)) return null;
+  const v = u.searchParams.get('v');
+  if (v && /^[\w-]{11}$/.test(v)) return v;
+  const m = u.pathname.match(/\/(embed|shorts|v|live)\/([\w-]{11})/);
+  return m ? m[2] : null;
+}
+async function fetchTitle(id){
+  if (titleCache.has(id)) return titleCache.get(id);
+  try{
+    const r = await fetch('https://www.youtube.com/oembed?format=json&url=' +
+      encodeURIComponent('https://www.youtube.com/watch?v=' + id));
+    if (!r.ok) throw 0;
+    const j = await r.json();
+    titleCache.set(id, j.title);
+    return j.title;
+  }catch{ return ''; }
+}
+const thumb = id => 'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg';
+
+/* =======================================================================
+   MQTT transport
+   ======================================================================= */
+const T = k => ROOT + '/' + room + '/' + k;   // state | presence | chat | req
+
+/* The CDN fallback loads asynchronously — give it a moment before giving up. */
+function waitForMqtt(tries){
+  if (typeof mqtt !== 'undefined') return connect();
+  if (tries > 40){ setStatus('off', 'sync library blocked'); toast('Could not load the sync library'); return; }
+  setStatus('warn', 'loading sync library…');
+  setTimeout(() => waitForMqtt(tries + 1), 200);
+}
+
+function connect(){
+  const url = BROKERS[brokerIx % BROKERS.length];
+  setStatus('warn', 'connecting…');
+  try{
+    mq = mqtt.connect(url, {
+      clientId: 'st_' + cid, protocolVersion: 4, clean: true,
+      keepalive: 30, connectTimeout: 8000, reconnectPeriod: everConnected ? 3000 : 0
+    });
+  }catch(err){ return nextBroker(); }
+
+  mq.on('connect', () => {
+    connected = true; everConnected = true;
+    mq.options.reconnectPeriod = 3000;      // only auto-retry a broker that worked once
+    setStatus('on', 'connected · ' + new URL(url).hostname);
+    mq.subscribe([T('state'), T('presence'), T('chat'), T('req')], {qos:0});
+    sendPresence();
+    if (isHost){ S.host = cid; S.hostName = me; publishState(); }
+    sysMsg('You joined room ' + room);
+  });
+
+  mq.on('message', (topic, buf) => {
+    let m; try { m = JSON.parse(buf.toString()); } catch { return; }
+    const kind = topic.split('/').pop();
+    if (kind === 'state')    return onState(m);
+    if (kind === 'presence') return onPresence(m);
+    if (kind === 'chat')     return onChat(m);
+    if (kind === 'req')      return onRequest(m);
+  });
+
+  mq.on('close',   () => { if (connected){ connected = false; setStatus('off','reconnecting…'); }
+                           else if (!everConnected) nextBroker(); });
+  mq.on('error',   () => { if (!everConnected) nextBroker(); });
+  mq.on('offline', () => setStatus('off','offline'));
+}
+function nextBroker(){
+  try { mq && mq.end(true); } catch {}
+  brokerIx++;
+  if (brokerIx >= BROKERS.length * 2){ setStatus('off','no relay reachable'); return; }
+  setTimeout(connect, 400);
+}
+function pub(kind, obj, retain){
+  if (!mq || !connected) return;
+  mq.publish(T(kind), JSON.stringify(obj), {qos:0, retain: !!retain});
+}
+function setStatus(cls, txt){
+  const el = $('status'); el.className = 'status ' + (cls === 'on' ? 'on' : cls === 'off' ? 'off' : '');
+  $('statusTxt').textContent = txt;
+}
+
+/* ---------------------------- state out (host) ---------------------------- */
+function publishState(){
+  if (!isHost) return;
+  if (ytReady && S.videoId){
+    const t = player.getCurrentTime();
+    if (isFinite(t)) S.position = t;
+  }
+  S.at = Date.now(); S.rev++; S.host = cid; S.hostName = me;
+  pub('state', S, true);
+  paintNowPlaying();
+}
+
+/* ---------------------------- state in (guest) ---------------------------- */
+function onState(m){
+  if (!m || m.host === cid) return;
+  lastHostSeen = Date.now();
+  $('claimHost').hidden = true;
+
+  if (isHost){
+    // Two hosts in one room: lowest client id wins, the other demotes.
+    if (m.host < cid){ isHost = false; paintRole(); sysMsg((m.hostName||'Someone') + ' is now host'); }
+    else return;
+  }
+
+  if (m.rev < S.rev && m.host === S.host) return;    // stale
+  const sample = m.at - Date.now();
+  offsets.push(sample); if (offsets.length > 12) offsets.shift();
+  const sorted = [...offsets].sort((a,b) => a-b);
+  clockOffset = sorted[Math.floor(sorted.length/2)];
+
+  const prev = S;
+  S = Object.assign({}, m);
+  if (prev.host !== S.host && S.hostName) sysMsg(S.hostName + ' is hosting');
+  applyState(S, prev.videoId !== S.videoId);
+  paintNowPlaying(); paintQueue(); paintRoomSettings();
+}
+
+function targetTime(m){
+  const now = Date.now() + clockOffset;
+  return m.position + (m.playing ? Math.max(0, (now - m.at) / 1000) : 0);
+}
+
+function applyState(m, changed){
+  if (!m || !m.videoId){ paintNowPlaying(); return; }
+  if (!ytReady){ pendingLoad = {id:m.videoId, t:targetTime(m), play:m.playing}; return; }
+
+  const cur = (player.getVideoData && player.getVideoData().video_id) || null;
+  if (changed || cur !== m.videoId){ hardLoad(m.videoId, targetTime(m), m.playing); return; }
+
+  const st = player.getPlayerState();
+  if (st === YT.PlayerState.BUFFERING) return;   // let it settle first
+
+  const want = targetTime(m);
+  const have = player.getCurrentTime();
+  const tol  = $('strict').checked ? DRIFT_TIGHT : DRIFT_LOOSE;
+
+  applying = true;
+  if (Math.abs(want - have) > tol) player.seekTo(want, true);
+  if (m.playing && st !== YT.PlayerState.PLAYING && !gated) player.playVideo();
+  if (!m.playing && st === YT.PlayerState.PLAYING) player.pauseVideo();
+  setTimeout(() => { applying = false; }, 450);
+}
+
+/* ---------------------------- requests (guest → host) ---------------------------- */
+function request(type, data){
+  const msg = Object.assign({type, from:cid, name:me}, data || {});
+  if (isHost) onRequest(msg); else pub('req', msg);
+}
+function onRequest(m){
+  if (!isHost || !m || m.from === cid) return;
+  const mayControl = S.everyone;
+  switch (m.type){
+    case 'add':
+      if (!m.id) return;
+      addToRoom(m.id, m.title || '', m.name || 'Someone');
+      return;
+    case 'play':   if (!mayControl) return deny(m); player.playVideo();  return;
+    case 'pause':  if (!mayControl) return deny(m); player.pauseVideo(); return;
+    case 'seek':   if (!mayControl) return deny(m); applying = true; player.seekTo(m.t, true);
+                   setTimeout(()=>{applying=false; publishState();}, 350); return;
+    case 'next':   if (!mayControl) return deny(m); nextTrack();  return;
+    case 'restart':if (!mayControl) return deny(m); applying = true; player.seekTo(0,true);
+                   setTimeout(()=>{applying=false; publishState();}, 350); return;
+    case 'remove': // anyone may pull a track back out of the queue
+                   S.queue = S.queue.filter(q => q.key !== m.key); publishState(); paintQueue(); return;
+  }
+}
+function deny(m){
+  const text = (m.name || 'Someone') + ' tried to control playback — host-only mode is on';
+  pub('chat', {sys:true, id:cid, text});      // id lets our own echo be filtered out
+  sysMsg(text);
+}
+
+/* ---------------------------- presence ---------------------------- */
+function sendPresence(){ pub('presence', {id:cid, name:me, host:isHost, t:Date.now()}); }
+function onPresence(m){
+  if (!m || !m.id || m.id === cid) return;      // ignore our own echo
+  const isNew = !people.has(m.id);
+  people.set(m.id, {name:m.name || 'Guest', host:!!m.host, ts:Date.now()});
+  if (m.host) lastHostSeen = Date.now();
+  if (isNew){
+    sysMsg((m.name || 'Someone') + ' joined');
+    if (isHost) { publishState(); sendPresence(); }   // catch the newcomer up immediately
+  }
+  paintPeople();
+}
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const [id, p] of people){
+    if (now - p.ts > PRES_TTL){ people.delete(id); changed = true; sysMsg(p.name + ' left'); }
+  }
+  if (changed) paintPeople();
+
+  // host disappeared?
+  const hostPresent = [...people.values()].some(p => p.host);
+  if (!isHost && !hostPresent && lastHostSeen && now - lastHostSeen > HOST_TTL){
+    if (people.size === 0){ becomeHost(true); }        // alone → just take it
+    else $('claimHost').hidden = false;
+  }
+}, 2000);
+
+function becomeHost(silent){
+  isHost = true; S.host = cid; S.hostName = me;
+  $('claimHost').hidden = true;
+  paintRole(); sendPresence(); publishState();
+  if (!silent) sysMsg('You are now the host');
+}
+
+/* ---------------------------- chat ---------------------------- */
+function sysMsg(text){ renderMsg({sys:true, text}); }
+function onChat(m){ if (m && m.id !== cid) renderMsg(m); }
+function renderMsg(m){
+  const log = $('chatlog');
+  const d = document.createElement('div');
+  if (m.sys){ d.className = 'msg sys'; d.textContent = m.text; }
+  else{
+    d.className = 'msg';
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.style.color = 'hsl(' + hue(m.name || '?') + ' 70% 68%)';
+    who.textContent = (m.name || 'Guest') + ': ';
+    d.appendChild(who);
+    d.appendChild(document.createTextNode(m.text));   // textNode = no HTML injection
+    chatCount++;
+    if (!$('pane-chat').classList.contains('active')) unseenChat++;
+    $('cCount').textContent = unseenChat ? unseenChat : chatCount;
+  }
+  log.appendChild(d);
+  while (log.children.length > 250) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+/* =======================================================================
+   Queue / track control
+   ======================================================================= */
+async function addByInput(){
+  const raw = $('addInput').value;
+  const id = parseVideoId(raw);
+  if (!id){
+    toast(/list=/.test(raw) ? 'Playlist links aren’t supported — paste a single video link'
+                            : 'That doesn’t look like a YouTube link');
+    return;
+  }
+  $('addInput').value = '';
+  const title = await fetchTitle(id);
+  if (isHost) addToRoom(id, title, me);
+  else { request('add', {id, title}); toast('Sent to the room'); }
+}
+function addToRoom(id, title, byName){
+  if (!isHost) return;
+  // Nothing playing, or the last track already finished → start this one now
+  // instead of parking it behind a dead video.
+  if (!S.videoId || idleEnded){
+    idleEnded = false;
+    S.videoId = id; S.title = title || id; S.position = 0; S.playing = !gated;
+    hardLoad(id, 0, !gated);
+    publishState();
+  } else {
+    S.queue.push({key: rand(6).toLowerCase(), id, title: title || id, by: byName || 'Someone'});
+    publishState(); paintQueue();
+  }
+  pub('chat', {sys:true, id:cid, text:(byName || 'Someone') + ' added “' + (title || id) + '”'});
+  sysMsg((byName || 'Someone') + ' added “' + (title || id) + '”');
+}
+function nextTrack(){
+  if (!isHost) return request('next');
+  const n = S.queue.shift();
+  if (!n){
+    idleEnded = true;                     // room is parked on a finished track
+    S.playing = false; publishState(); paintQueue();
+    return;
+  }
+  idleEnded = false;
+  S.videoId = n.id; S.title = n.title; S.position = 0; S.playing = true;
+  hardLoad(n.id, 0, true);
+  publishState(); paintQueue();
+}
+function playIndex(key){
+  if (!isHost) return toast('Only the host can jump the queue');
+  const ix = S.queue.findIndex(q => q.key === key);
+  if (ix < 0) return;
+  const [n] = S.queue.splice(ix, 1);
+  idleEnded = false;
+  S.videoId = n.id; S.title = n.title; S.position = 0; S.playing = true;
+  hardLoad(n.id, 0, true);
+  publishState(); paintQueue();
+}
+function removeKey(key){
+  if (isHost){ S.queue = S.queue.filter(q => q.key !== key); publishState(); paintQueue(); }
+  else request('remove', {key, by:cid});
+}
+
+/* ---------------------------- transport buttons ---------------------------- */
+function canControl(){ return isHost || S.everyone; }
+$('playBtn').onclick = () => {
+  if (!S.videoId) return toast('Add something to play first');
+  const playing = ytReady && player.getPlayerState() === YT.PlayerState.PLAYING;
+  if (isHost){ playing ? player.pauseVideo() : player.playVideo(); }
+  else if (S.everyone){ request(playing ? 'pause' : 'play'); }
+  else toast('Host-only mode — ask the host, or turn on “everyone can control”');
+};
+$('nextBtn').onclick    = () => canControl() ? nextTrack() : toast('Host-only mode is on');
+$('prevBtn').onclick    = () => {
+  if (!canControl()) return toast('Host-only mode is on');
+  if (!isHost) return request('restart');
+  applying = true; player.seekTo(0, true);
+  setTimeout(() => { applying = false; publishState(); }, 300);
+};
+$('resyncBtn').onclick  = () => { offsets = []; applyState(S, true); toast('Re-synced to the room'); };
+$('claimHost').onclick  = () => becomeHost();
+$('addBtn').onclick     = addByInput;
+$('addInput').onkeydown = e => { if (e.key === 'Enter') addByInput(); };
+
+let seeking = false;
+$('seek').oninput = () => { seeking = true; };
+$('seek').onchange = e => {
+  seeking = false;
+  const dur = ytReady ? player.getDuration() : 0;
+  if (!dur) return;
+  const t = dur * (e.target.value / 1000);
+  if (isHost){ applying = true; player.seekTo(t, true); setTimeout(()=>{applying=false; publishState();}, 300); }
+  else if (S.everyone) request('seek', {t});
+  else { toast('Host-only mode is on'); paintProgress(); }
+};
+
+$('vol').oninput = e => { if (ytReady){ player.unMute(); player.setVolume(Number(e.target.value)); } paintVol(); };
+$('muteBtn').onclick = () => {
+  if (!ytReady) return;
+  if (player.isMuted()){ player.unMute(); } else { player.mute(); }
+  paintVol();
+};
+$('audioOnly').onchange = e => $('cover').classList.toggle('show', e.target.checked);
+$('everyoneCtl').onchange = e => {
+  if (!isHost){ e.target.checked = S.everyone; return toast('Only the host can change this'); }
+  S.everyone = e.target.checked; publishState();
+  const text = 'Playback control is now ' + (S.everyone ? 'open to everyone' : 'host-only');
+  pub('chat', {sys:true, id:cid, text}); sysMsg(text);
+};
+$('chatSend').onclick = sendChat;
+$('chatInput').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
+function sendChat(){
+  const text = $('chatInput').value.trim();
+  if (!text) return;
+  $('chatInput').value = '';
+  const m = {id:cid, name:me, text, t:Date.now()};
+  pub('chat', m); renderMsg({name:me, text});
+}
+$('renameBtn').onclick = () => {
+  const n = (prompt('Your name', me) || '').trim().slice(0,24);
+  if (!n) return;
+  me = n; localStorage.setItem('st.name', me);
+  sendPresence(); if (isHost) publishState(); paintPeople();
+};
+$('copyLink').onclick = async () => {
+  const url = location.origin + location.pathname + '#' + room;
+  try { await navigator.clipboard.writeText(url); toast('Invite link copied'); }
+  catch { prompt('Copy this link:', url); }
+};
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + b.dataset.tab));
+  if (b.dataset.tab === 'chat'){ unseenChat = 0; $('cCount').textContent = chatCount; $('chatInput').focus(); }
+});
+
+/* ---------------------------- autoplay gate ---------------------------- */
+$('gateBtn').onclick = () => {
+  gated = false;
+  $('gate').classList.add('hide');
+  if (ytReady){
+    player.unMute(); player.setVolume(Number($('vol').value));
+    if (S.videoId) applyState(S, true);
+  }
+};
+function showGate(title, text){
+  gated = true;
+  $('gateTitle').textContent = title; $('gateText').textContent = text;
+  $('gate').classList.remove('hide');
+}
+
+/* =======================================================================
+   Painting
+   ======================================================================= */
+function paintRole(){
+  const t = $('roleTag');
+  t.hidden = false;
+  t.textContent = isHost ? 'host' : 'guest';
+  t.className = 'role' + (isHost ? ' host' : '');
+  $('resyncBtn').hidden = isHost;
+  $('permNote').textContent = isHost
+    ? 'You are the host: your player is the source of truth for everyone. Keep this tab open.'
+    : (S.everyone ? 'Everyone can control playback in this room.'
+                  : 'Host controls playback. You can still add to the queue and chat.');
+}
+function paintNowPlaying(){
+  $('npTitle').textContent = S.title || (S.videoId ? S.videoId : 'Nothing playing');
+  $('coverTitle').textContent = S.title || 'Audio only';
+  const q = S.queue.length;
+  $('npSub').textContent = S.videoId
+    ? (q ? q + ' more in queue' : 'Last one in the queue')
+    : 'Paste a YouTube link below to start';
+  $('cover').classList.toggle('paused', !S.playing);
+  paintPlayIcon();
+}
+function paintPlayIcon(){
+  const playing = ytReady && player.getPlayerState && player.getPlayerState() === YT.PlayerState.PLAYING;
+  $('playIcon').innerHTML = playing
+    ? '<path d="M6 5h4v14H6zm8 0h4v14h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+}
+function paintVol(){
+  const muted = ytReady && player.isMuted();
+  $('volIcon').innerHTML = muted
+    ? '<path d="M3 10v4h4l5 4V6L7 10H3zm16.5-1.9l-1.4-1.4L15.9 9 13.7 6.7l-1.4 1.4L14.5 10l-2.2 2.2 1.4 1.4L16 11.4l2.2 2.2 1.4-1.4L17.4 10z"/>'
+    : '<path d="M3 10v4h4l5 4V6L7 10H3zm13.5 2a4.5 4.5 0 00-2.5-4v8a4.5 4.5 0 002.5-4z"/>';
+}
+function paintQueue(){
+  const list = $('qList');
+  list.innerHTML = '';
+  $('qCount').textContent = S.queue.length;
+  $('qEmpty').style.display = S.queue.length ? 'none' : '';
+  S.queue.forEach((q, i) => {
+    const el = document.createElement('div');
+    el.className = 'item';
+    const img = document.createElement('img'); img.src = thumb(q.id); img.loading = 'lazy'; img.alt = '';
+    const m = document.createElement('div'); m.className = 'm';
+    const t = document.createElement('div'); t.textContent = (i+1) + '. ' + (q.title || q.id);
+    const b = document.createElement('div'); b.textContent = 'added by ' + (q.by || 'someone');
+    m.append(t, b);
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.title = 'Remove';
+    x.onclick = ev => { ev.stopPropagation(); removeKey(q.key); };
+    el.append(img, m, x);
+    el.onclick = () => playIndex(q.key);
+    el.style.cursor = 'pointer';
+    list.appendChild(el);
+  });
+}
+function paintPeople(){
+  const wrap = $('pList');
+  wrap.innerHTML = '';
+  const all = [{id:cid, name:me + ' (you)', host:isHost, ts:Date.now()},
+               ...[...people.entries()].filter(([id]) => id !== cid).map(([id,p]) => ({id, ...p}))];
+  $('pCount').textContent = all.length;
+  all.forEach(p => {
+    const row = document.createElement('div'); row.className = 'person';
+    const av = document.createElement('div'); av.className = 'av';
+    av.style.background = 'hsl(' + hue(p.name) + ' 65% 62%)';
+    av.textContent = (p.name.trim()[0] || '?').toUpperCase();
+    const n = document.createElement('div'); n.className = 'n'; n.textContent = p.name;
+    const tag = document.createElement('span'); tag.className = 'tag';
+    tag.textContent = p.host ? 'host' : '';
+    tag.style.color = p.host ? 'var(--warn)' : 'var(--dim)';
+    row.append(av, n, tag);
+    wrap.appendChild(row);
+  });
+}
+function paintRoomSettings(){
+  $('everyoneCtl').checked = !!S.everyone;
+  paintRole();
+}
+function paintProgress(){
+  if (!ytReady || !S.videoId) return;
+  const dur = player.getDuration() || 0, cur = player.getCurrentTime() || 0;
+  $('tCur').textContent = fmt(cur);
+  $('tDur').textContent = fmt(dur);
+  if (!seeking) $('seek').value = dur ? clamp(Math.round(cur / dur * 1000), 0, 1000) : 0;
+  const d = S.videoId && S.playing && !isHost ? (targetTime(S) - cur) : 0;
+  if (!isHost && S.playing) $('resyncBtn').textContent = 'Re-sync (' + (d >= 0 ? '+' : '') + d.toFixed(1) + 's)';
+}
+
+/* =======================================================================
+   Loops
+   ======================================================================= */
+setInterval(() => { if (isHost && S.videoId) publishState(); }, BEAT_MS);
+setInterval(sendPresence, PRES_MS);
+setInterval(paintProgress, 400);
+setInterval(() => { if (!isHost && S.videoId && S.playing) applyState(S, false); }, 3000);
+
+window.addEventListener('beforeunload', () => {
+  if (isHost && mq && connected){
+    // Hand the room a final snapshot marked paused so nobody spins forever.
+    try { S.playing = false; S.at = Date.now(); S.rev++; mq.publish(T('state'), JSON.stringify(S), {qos:0, retain:true}); } catch {}
+  }
+});
+
+/* =======================================================================
+   Boot
+   ======================================================================= */
+function start(newRoom, asHost){
+  room = newRoom.toUpperCase();
+  isHost = asHost;
+  location.hash = room;
+  $('modal').classList.add('hide');
+  $('roomChip').hidden = false;
+  $('roomCode').textContent = room;
+  paintRole(); paintNowPlaying(); paintQueue(); paintPeople(); paintVol();
+  showGate(asHost ? 'Room ' + room + ' is live' : 'Joining room ' + room,
+           asHost ? 'Share the invite link, then tap to enable sound in this tab.'
+                  : 'Tap once to enable sound — you’ll land exactly where the room is.');
+  waitForMqtt(0);
+}
+$('createBtn').onclick = () => {
+  const n = ($('nameIn').value || '').trim() || 'Host';
+  me = n.slice(0,24); localStorage.setItem('st.name', me);
+  start(rand(6), true);
+};
+$('joinBtn').onclick = () => {
+  const code = ($('codeIn').value || '').trim().toUpperCase();
+  if (code.length < 4) return toast('Enter the room code your friend sent you');
+  const n = ($('nameIn').value || '').trim() || 'Guest-' + rand(3);
+  me = n.slice(0,24); localStorage.setItem('st.name', me);
+  start(code, false);
+};
+$('codeIn').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
+$('nameIn').value = me;
+
+(function initFromUrl(){
+  const h = (location.hash || '').replace(/^#/, '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if (h){ $('codeIn').value = h; $('joinBtn').classList.add('primary'); $('createBtn').classList.remove('primary');
+          $('createBtn').classList.add('ghost'); }
+  if (location.protocol === 'file:')
+    toast('Open this over http(s) — the YouTube player needs a real origin');
+})();
+</script>
+</body>
+</html>
