@@ -26,6 +26,7 @@ No account. No server to run. No API key.
 | | |
 |---|---|
 | Synced playback | Play, pause, seek and track changes propagate to everyone |
+| YouTube search | Type a query instead of hunting for a link; results show channel and duration |
 | Shared queue | Anyone in the room can add videos; the host's player runs the show |
 | Audio-only mode | Hides the video, keeps the sound — for music listening |
 | Chat | Plus join/leave and "X added …" activity messages |
@@ -34,14 +35,32 @@ No account. No server to run. No API key.
 | Per-person volume | Volume and mute are local — they don't affect the room |
 | Control modes | Host-only by default, or open playback control to everyone |
 
-Titles are resolved through YouTube's public oEmbed endpoint, so no API key is needed.
+Titles for pasted links are resolved through YouTube's public oEmbed endpoint, so
+no API key is needed for those.
+
+### How search works
+
+Search needs a data source, and the official YouTube Data API requires a key that
+has no safe hiding place in a public static page. So:
+
+1. **With your own key** (recommended if search matters to you) — paste it under
+   **People → search**. It is stored in that browser's `localStorage` only, never in
+   this repo. Get one from Google Cloud → *APIs & Services* → enable **YouTube Data
+   API v3** → create an API key, then restrict it to your site's domain. The free
+   quota is 10,000 units/day and a search costs 100, so roughly 100 searches a day.
+2. **Without a key** — the app falls back to public keyless API mirrors
+   (Piped / Invidious). This works with no setup at all, but those instances are
+   volunteer-run and most are unreachable at any given time, which is why the app
+   tries a list of them and remembers the last one that answered.
 
 ## Usage
 
 1. Open the page, enter a name, hit **Create a room**.
 2. Hit **Copy invite** and send the link to whoever is joining.
-3. Paste a YouTube link (`youtube.com/watch?v=…`, `youtu.be/…`, `/shorts/…`, or a
-   bare 11-character video ID) and press **Add**.
+3. Type what you want to hear and press **Search**, then click a result to add it.
+   Pasting a link (`youtube.com/watch?v=…`, `youtu.be/…`, `/shorts/…`, or a bare
+   11-character video ID) also works — the button switches to **Add** when it
+   recognises one.
 4. Everyone taps once to enable sound — browsers block audible autoplay until a
    real click happens — and playback stays locked together from then on.
 
@@ -60,7 +79,9 @@ Then visit `http://127.0.0.1:8787/`.
 
 - The **host's tab must stay open** — it is the source of truth. If it closes,
   another person can take over as host.
-- **Playlist URLs** (`?list=…`) aren't expanded; paste individual videos instead.
+- **Playlist URLs** (`?list=…`) aren't expanded; add individual videos instead.
+- **Keyless search is unreliable** by nature — if the dropdown says search is
+  unavailable, every mirror in the list was down. Add an API key, or paste a link.
 - Videos whose owners disable embedding can't play in any embedded player. The
   host automatically skips to the next queued track when that happens.
 - The sync relay is a **public MQTT broker**: anyone who knows your room code can
