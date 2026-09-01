@@ -209,6 +209,7 @@
   <div class="room-chip" id="roomChip" hidden>
     Room <b id="roomCode">------</b>
     <button class="btn sm" id="copyLink">Copy invite</button>
+    <button class="btn sm ghost" id="leaveBtn" title="Leave this room">Leave</button>
   </div>
   <span class="role" id="roleTag" hidden>guest</span>
   <div class="spacer"></div>
@@ -395,7 +396,7 @@ let S = {
 let mq = null, brokerIx = 0, connected = false, everConnected = false;
 let player = null, ytReady = false, gated = true, pendingLoad = null;
 let offsets = [], clockOffset = 0;      // hostClock ≈ Date.now() + clockOffset
-let lastHostSeen = 0, applying = false, snapTimer = null;
+let lastHostSeen = 0, joinedAt = 0, applying = false, snapTimer = null;
 let idleEnded = false;                   // current track finished, nothing queued
 let lastLoadAt = 0, sawPlaying = false;  // guards against stale ENDED events
 let people = new Map();                  // cid → {name, host, ts}
@@ -680,14 +681,25 @@ setInterval(() => {
 
   // host disappeared?
   const hostPresent = [...people.values()].some(p => p.host);
-  if (!isHost && !hostPresent && lastHostSeen && now - lastHostSeen > HOST_TTL){
-    if (people.size === 0){ becomeHost(true); }        // alone → just take it
+  // Count from whichever is later: the last sign of a host, or when we arrived.
+  // Without the joinedAt fallback, a room that never had a host stays hostless
+  // forever and every queue request vanishes.
+  const since = Math.max(lastHostSeen, joinedAt);
+  if (!isHost && !hostPresent && since && now - since > HOST_TTL){
+    // Nobody is driving. Pick a successor without anyone having to click:
+    // the room's previous host if that's us (a refresh), otherwise the lowest
+    // client id present, which every client agrees on. The button stays as a
+    // manual fallback for whoever doesn't win.
+    const wasOurRoom = S.hostName && S.hostName === me;
+    const first = [cid, ...people.keys()].sort()[0];
+    if (people.size === 0 || wasOurRoom || first === cid) becomeHost(people.size === 0);
     else $('claimHost').hidden = false;
   }
 }, 2000);
 
 function becomeHost(silent){
   isHost = true; S.host = cid; S.hostName = me;
+  localStorage.setItem('st.hostRoom', room);        // so our own refresh resumes hosting
   $('claimHost').hidden = true;
   paintRole(); sendPresence(); publishState();
   if (!silent) sysMsg('You are now the host');
@@ -838,6 +850,11 @@ $('renameBtn').onclick = () => {
   me = n; localStorage.setItem('st.name', me);
   sendPresence(); if (isHost) publishState(); paintPeople();
 };
+$('leaveBtn').onclick = () => {
+  // Drop the room code so the reload lands on the join screen instead of auto-rejoining.
+  history.replaceState(null, '', location.pathname);
+  location.reload();
+};
 $('copyLink').onclick = async () => {
   const url = location.origin + location.pathname + '#' + room;
   try { await navigator.clipboard.writeText(url); toast('Invite link copied'); }
@@ -979,6 +996,7 @@ function start(newRoom, asHost){
   // Remember rooms we host, so a refresh comes back as host instead of a guest
   // stranded in a room with nobody driving.
   if (asHost) localStorage.setItem('st.hostRoom', room);
+  joinedAt = Date.now();
   $('modal').classList.add('hide');
   $('roomChip').hidden = false;
   $('roomCode').textContent = room;
@@ -1004,12 +1022,24 @@ $('codeIn').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
 $('nameIn').value = me;
 
 (function initFromUrl(){
-  const h = (location.hash || '').replace(/^#/, '').toUpperCase().replace(/[^A-Z0-9]/g,'');
-  if (h){ $('codeIn').value = h; $('joinBtn').classList.add('primary'); $('createBtn').classList.remove('primary');
-          $('createBtn').classList.add('ghost');
-          if (localStorage.getItem('st.hostRoom') === h) $('joinBtn').textContent = 'Resume as host'; }
   if (location.protocol === 'file:')
     toast('Open this over http(s) — the YouTube player needs a real origin');
+
+  const h = (location.hash || '').replace(/^#/, '').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if (!h) return;                                   // no code in the link → show the modal
+
+  $('codeIn').value = h;
+  $('joinBtn').classList.add('primary');
+  $('createBtn').classList.remove('primary'); $('createBtn').classList.add('ghost');
+
+  const resume = localStorage.getItem('st.hostRoom') === h;
+  if (resume) $('joinBtn').textContent = 'Resume as host';
+
+  // We already know the room and who you are — a refresh should drop you
+  // straight back in rather than asking again. Only first-time visitors
+  // (no saved name) get the modal.
+  const saved = (localStorage.getItem('st.name') || '').trim();
+  if (saved){ me = saved.slice(0,24); start(h, resume); }
 })();
 </script>
 </body>
