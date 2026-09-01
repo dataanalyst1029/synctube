@@ -60,15 +60,20 @@
 
   /* ---------- layout ---------- */
   main{flex:1;display:flex;min-height:0}
-  .left{flex:1;display:flex;flex-direction:column;min-width:0;padding:14px;gap:12px;overflow:auto}
+  .left{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;padding:14px;gap:12px;overflow:auto}
   .right{
     width:355px;flex:0 0 355px;border-left:1px solid var(--line);
     background:var(--panel);display:flex;flex-direction:column;min-height:0
   }
 
   /* ---------- player ---------- */
-  .stage{position:relative;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line)}
-  .stage .ratio{position:relative;width:100%;padding-top:56.25%}
+  /* The stage takes whatever vertical room is left and centres a 16:9 box in it,
+     so the player is never clipped by flex shrinking. */
+  .stage{
+    position:relative;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);
+    flex:1 1 auto;min-height:220px;display:flex;align-items:center;justify-content:center
+  }
+  .stage .ratio{position:relative;height:100%;aspect-ratio:16/9;max-width:100%;flex:0 0 auto}
   .stage iframe,#player{position:absolute;inset:0;width:100%;height:100%;border:0}
   .cover{
     position:absolute;inset:0;display:none;place-items:center;text-align:center;
@@ -190,6 +195,9 @@
     main{flex-direction:column}
     .right{width:auto;flex:1 1 auto;border-left:none;border-top:1px solid var(--line);min-height:44vh}
     .left{flex:0 0 auto;overflow:visible}
+    /* Stacked layout: the page scrolls, so size the player by width instead. */
+    .stage{flex:0 0 auto;min-height:0;display:block}
+    .stage .ratio{width:100%;height:auto;max-width:none}
     header{gap:8px}
   }
 </style>
@@ -968,6 +976,9 @@ function start(newRoom, asHost){
   room = newRoom.toUpperCase();
   isHost = asHost;
   location.hash = room;
+  // Remember rooms we host, so a refresh comes back as host instead of a guest
+  // stranded in a room with nobody driving.
+  if (asHost) localStorage.setItem('st.hostRoom', room);
   $('modal').classList.add('hide');
   $('roomChip').hidden = false;
   $('roomCode').textContent = room;
@@ -987,7 +998,7 @@ $('joinBtn').onclick = () => {
   if (code.length < 4) return toast('Enter the room code your friend sent you');
   const n = ($('nameIn').value || '').trim() || 'Guest-' + rand(3);
   me = n.slice(0,24); localStorage.setItem('st.name', me);
-  start(code, false);
+  start(code, localStorage.getItem('st.hostRoom') === code);   // resume hosting if it's our room
 };
 $('codeIn').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
 $('nameIn').value = me;
@@ -995,7 +1006,8 @@ $('nameIn').value = me;
 (function initFromUrl(){
   const h = (location.hash || '').replace(/^#/, '').toUpperCase().replace(/[^A-Z0-9]/g,'');
   if (h){ $('codeIn').value = h; $('joinBtn').classList.add('primary'); $('createBtn').classList.remove('primary');
-          $('createBtn').classList.add('ghost'); }
+          $('createBtn').classList.add('ghost');
+          if (localStorage.getItem('st.hostRoom') === h) $('joinBtn').textContent = 'Resume as host'; }
   if (location.protocol === 'file:')
     toast('Open this over http(s) — the YouTube player needs a real origin');
 })();
