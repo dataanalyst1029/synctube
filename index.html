@@ -347,6 +347,9 @@
       <label class="switch" style="padding:10px 4px">
         <input type="checkbox" id="everyoneCtl"> Let everyone control playback
       </label>
+      <label class="switch" style="padding:0 4px 10px">
+        <input type="checkbox" id="autoplayCtl" checked> Autoplay similar music when the queue runs out
+      </label>
       <button class="btn sm ghost" id="renameBtn" style="align-self:flex-start">Change my name</button>
 
       <div class="hr">search</div>
@@ -441,9 +444,11 @@ let isHost = false;
 /* shared, authoritative room state (published retained by the host) */
 let S = {
   rev: 0, host: '', hostName: '',
-  videoId: null, title: '', playing: false,
+  videoId: null, title: '', channel: '', playing: false,
   position: 0, at: 0,            // at = host clock ms when position was sampled
-  queue: [], everyone: false
+  queue: [], everyone: false,
+  autoplay: true,                // keep playing similar music when the queue empties
+  upnext: [], upnextAt: 0        // candidates + host-clock deadline for the auto pick
 };
 
 let mq = null, brokerIx = 0, connected = false, everConnected = false;
@@ -478,7 +483,8 @@ window.onYouTubeIframeAPIReady = function(){
         // Say what happened on screen and leave it there. A toast disappears
         // and leaves a black player with no explanation.
         showPlayError(e.data, S.videoId);
-        if (isHost && S.queue.length) setTimeout(nextTrack, 2000);   // only skip if there IS a next
+        // Move on if there's somewhere to go: the queue, or an autoplay pick.
+        if (isHost && (S.queue.length || S.autoplay)) setTimeout(nextTrack, 2500);
       }
     }
   });
@@ -497,7 +503,10 @@ function onPlayerState(e){
   if (applying) return;
 
   if (isHost){
-    if (e.data === YT.PlayerState.PLAYING){ S.playing = true; publishState(); }
+    if (e.data === YT.PlayerState.PLAYING){
+      S.playing = true; publishState();
+      if (!nextCandidates.length) prefetchNext();   // warm the up-next list for this track
+    }
     if (e.data === YT.PlayerState.PAUSED) { S.playing = false; publishState(); }
     if (e.data === YT.PlayerState.ENDED)  { if (reallyEnded()) nextTrack(); }
   } else {
@@ -663,7 +672,7 @@ function onState(m){
   S = Object.assign({}, m);
   if (prev.host !== S.host && S.hostName) sysMsg(S.hostName + ' is hosting');
   applyState(S, prev.videoId !== S.videoId);
-  paintNowPlaying(); paintQueue(); paintRoomSettings();
+  paintNowPlaying(); paintQueue(); paintRoomSettings(); paintUpNext();
 }
 
 function targetTime(m){
@@ -735,7 +744,7 @@ function onRequest(m){
       return;
     case 'add':
       if (!m.id) return;
-      addToRoom(m.id, m.title || '', m.name || 'Someone');
+      addToRoom(m.id, m.title || '', m.name || 'Someone', m.channel);
       return;
     case 'play':   if (!mayControl) return deny(m); player.playVideo();  return;
     case 'pause':  if (!mayControl) return deny(m); player.pauseVideo(); return;
@@ -744,6 +753,8 @@ function onRequest(m){
     case 'next':   if (!mayControl) return deny(m); nextTrack();  return;
     case 'restart':if (!mayControl) return deny(m); applying = true; player.seekTo(0,true);
                    setTimeout(()=>{applying=false; publishState();}, 350); return;
+    case 'pick':     if (!mayControl) return deny(m); playPick(m.item);   return;
+    case 'stopnext': if (!mayControl) return deny(m); clearUpNext(true);  return;
     case 'remove': // anyone may pull a track back out of the queue
                    S.queue = S.queue.filter(q => q.key !== m.key); publishState(); paintQueue(); return;
   }
@@ -828,9 +839,9 @@ function renderMsg(m){
 /* =======================================================================
    Queue / track control
    ======================================================================= */
-function addVideo(id, title){
-  if (isHost) addToRoom(id, title, me);
-  else { request('add', {id, title}); toast('Sent to the room'); }
+function addVideo(id, title, channel){
+  if (isHost) addToRoom(id, title, me, channel);
+  else { request('add', {id, title, channel}); toast('Sent to the room'); }
 }
 
 async function addByInput(){
@@ -929,14 +940,18 @@ async function searchMirrors(q){
   throw new Error('all mirrors unreachable');
 }
 
+async function searchAny(q){
+  const key = (localStorage.getItem('st.ytKey') || '').trim();
+  return key ? await searchOfficial(q, key).catch(() => searchMirrors(q))
+             : await searchMirrors(q);
+}
+
 let searchSeq = 0;
 async function runSearch(q){
   const seq = ++searchSeq;
   showResults('Searching “' + q + '”…', []);
-  const key = (localStorage.getItem('st.ytKey') || '').trim();
   try{
-    const items = key ? await searchOfficial(q, key).catch(() => searchMirrors(q))
-                      : await searchMirrors(q);
+    const items = await searchAny(q);
     if (seq !== searchSeq) return;            // a newer search already started
     showResults(items.length ? items.length + ' results for “' + q + '”'
                              : 'Nothing found for “' + q + '”', items);
@@ -963,7 +978,7 @@ function showResults(headline, items){
     plus.className = 'x'; plus.textContent = '+'; plus.title = 'Add to queue';
     el.append(img, m, plus);
     el.onclick = () => {
-      addVideo(v.id, v.title);
+      addVideo(v.id, v.title, v.channel);
       $('addInput').value = ''; paintAddBtn(); hideResults();
     };
     list.appendChild(el);
@@ -971,20 +986,130 @@ function showResults(headline, items){
   $('results').hidden = false;
 }
 function hideResults(){ $('results').hidden = true; }
+
+/* =======================================================================
+   Autoplay ("keep the music going")
+
+   YouTube's own recommendations aren't reachable here: the Data API dropped
+   relatedToVideoId in 2023, and the keyless mirrors return either nothing, an
+   error, or generic filler for music videos. What IS reliable is search — so
+   the next track comes from a radio-style query seeded off the current one's
+   artist. Candidates are offered with a countdown: pick one, or the top one
+   plays by itself.
+   ======================================================================= */
+const UPNEXT_SECS = 12;
+const played = new Set();          // don't loop back to what we just heard
+let nextCandidates = [], upnextFired = false, autoTab = false;
+
+/* Pick a "radio" query for the current track. The channel is usually the most
+   reliable artist signal — "Ex Battalion Music", or "Florante - Topic" — because
+   title word order is inconsistent ("Artist - Song" vs "Song - Artist"). Labels
+   are the exception: "Universal Records Philippines" says nothing about who is
+   singing, so for those fall back to the title. */
+function seedQuery(){
+  const clean = s => (s || '')
+    .replace(/\s*[\(\[][^)\]]*[\)\]]\s*/g, ' ')
+    .replace(/\b(official|lyrics?|video|audio|hd|4k|mv|remaster(ed)?)\b/gi, '')
+    .replace(/\s+/g, ' ').trim();
+
+  const ch = (S.channel || '').replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').trim();
+  const labelish = /\b(records?|recordings?|entertainment|universal|sony|warner|emi|media|productions?|studios?|channel|tv)\b/i.test(ch);
+  if (ch && !labelish && ch.length >= 3) return ch.slice(0, 60);
+
+  const title = clean(S.title);
+  const parts = title.split(/\s+[-–—|]\s+/);
+  if (parts.length > 1) return (clean(parts[0]) || title).slice(0, 60);
+  return title.slice(0, 60);
+}
+
+async function findNext(){
+  const seed = seedQuery();
+  if (!seed) return [];
+  let items = [];
+  try{ items = await searchAny(seed); }catch{ return []; }
+  return items.filter(v =>
+    v.id && v.id !== S.videoId &&
+    !played.has(v.id) &&
+    !S.queue.some(q => q.id === v.id) &&
+    (!v.seconds || (v.seconds > 30 && v.seconds < 1500))   // skip clips and hour-long compilations
+  ).slice(0, 4);
+}
+
+/* Warm the list while the current track plays, so the picker is instant. */
+async function prefetchNext(){
+  if (!isHost || !S.autoplay || !S.videoId) return;
+  const got = await findNext();
+  if (got.length) nextCandidates = got;
+}
+
+async function offerUpNext(){
+  if (!isHost || !S.autoplay) return false;
+  let items = nextCandidates.length ? nextCandidates : await findNext();
+  nextCandidates = [];
+  if (!items.length) return false;
+  S.upnext = items;
+  S.upnextAt = Date.now() + UPNEXT_SECS * 1000;
+  upnextFired = false;
+  publishState(); paintUpNext(); paintQueue();
+  return true;
+}
+
+function clearUpNext(publish){
+  if (!S.upnext || !S.upnext.length) return;
+  S.upnext = []; S.upnextAt = 0; upnextFired = false;
+  if (publish && isHost) publishState();
+  paintUpNext(); paintQueue();
+}
+
+function playPick(item){
+  if (!item) return;
+  if (!isHost) return request('pick', {item});
+  if (S.videoId) played.add(S.videoId);
+  S.upnext = []; S.upnextAt = 0; upnextFired = false;
+  idleEnded = false;
+  S.videoId = item.id; S.title = item.title || item.id; S.channel = item.channel || '';
+  S.position = 0; S.playing = true;
+  hardLoad(item.id, 0, true);
+  publishState(); paintQueue(); paintUpNext();
+  prefetchNext();
+}
+
+function upnextLeft(){
+  if (!S.upnextAt) return 0;
+  return Math.max(0, Math.ceil((S.upnextAt - (Date.now() + clockOffset)) / 1000));
+}
+
+function paintUpNext(){
+  const on = !!(S.upnext && S.upnext.length && S.upnextAt);
+  if (on && !autoTab){                       // surface the choice once, unprompted
+    autoTab = true;
+    const qb = document.querySelector('.tabs button[data-tab="queue"]');
+    if (qb) qb.click();
+  }
+  if (!on) autoTab = false;
+
+  if (isHost && on && !upnextFired && upnextLeft() <= 0){
+    upnextFired = true;
+    playPick(S.upnext[0]);
+  }
+}
 function paintAddBtn(){
   $('addBtn').textContent = parseVideoId($('addInput').value.trim()) ? 'Add' : 'Search';
 }
-function addToRoom(id, title, byName){
+function addToRoom(id, title, byName, channel){
   if (!isHost) return;
+  clearUpNext(false);                        // a real choice beats an autoplay guess
   // Nothing playing, or the last track already finished → start this one now
   // instead of parking it behind a dead video.
   if (!S.videoId || idleEnded){
     idleEnded = false;
-    S.videoId = id; S.title = title || id; S.position = 0; S.playing = !gated;
+    S.videoId = id; S.title = title || id; S.channel = channel || '';
+    S.position = 0; S.playing = !gated;
     hardLoad(id, 0, !gated);
     publishState();
   } else {
-    S.queue.push({key: rand(6).toLowerCase(), id, title: title || id, by: byName || 'Someone'});
+    S.queue.push({key: rand(6).toLowerCase(), id, title: title || id,
+                  channel: channel || '', by: byName || 'Someone'});
     publishState(); paintQueue();
   }
   pub('chat', {sys:true, id:cid, text:(byName || 'Someone') + ' added “' + (title || id) + '”'});
@@ -992,14 +1117,18 @@ function addToRoom(id, title, byName){
 }
 function nextTrack(){
   if (!isHost) return request('next');
+  if (S.videoId) played.add(S.videoId);
   const n = S.queue.shift();
   if (!n){
     idleEnded = true;                     // room is parked on a finished track
     S.playing = false; publishState(); paintQueue();
+    offerUpNext();                        // …unless autoplay can find something
     return;
   }
   idleEnded = false;
-  S.videoId = n.id; S.title = n.title; S.position = 0; S.playing = true;
+  clearUpNext(false);
+  S.videoId = n.id; S.title = n.title; S.channel = n.channel || '';
+  S.position = 0; S.playing = true;
   hardLoad(n.id, 0, true);
   publishState(); paintQueue();
 }
@@ -1099,6 +1228,14 @@ $('everyoneCtl').onchange = e => {
   const text = 'Playback control is now ' + (S.everyone ? 'open to everyone' : 'host-only');
   pub('chat', {sys:true, id:cid, text}); sysMsg(text);
 };
+$('autoplayCtl').onchange = e => {
+  if (!isHost){ e.target.checked = !!S.autoplay; return toast('Only the host can change this'); }
+  S.autoplay = e.target.checked;
+  if (!S.autoplay) clearUpNext(false); else prefetchNext();
+  publishState();
+  const text = 'Autoplay is now ' + (S.autoplay ? 'on' : 'off');
+  pub('chat', {sys:true, id:cid, text}); sysMsg(text);
+};
 $('chatSend').onclick = sendChat;
 $('chatInput').onkeydown = e => { if (e.key === 'Enter') sendChat(); };
 function sendChat(){
@@ -1178,9 +1315,12 @@ function paintNowPlaying(){
   $('npTitle').textContent = S.title || (S.videoId ? S.videoId : 'Nothing playing');
   $('coverTitle').textContent = S.title || 'Audio only';
   const q = S.queue.length;
-  $('npSub').textContent = S.videoId
-    ? (q ? q + ' more in queue' : 'Last one in the queue')
-    : 'Paste a YouTube link below to start';
+  const picking = !!(S.upnext && S.upnext.length && S.upnextAt);
+  $('npSub').textContent = picking
+    ? 'Up next in ' + upnextLeft() + 's — “' + (S.upnext[0].title || '') + '” (choose another under Queue)'
+    : S.videoId
+      ? (q ? q + ' more in queue' : (S.autoplay ? 'Last one queued — autoplay will keep it going' : 'Last one in the queue'))
+      : 'Search for something above to start';
   $('cover').classList.toggle('paused', !S.playing);
   paintPlayIcon();
 }
@@ -1200,7 +1340,51 @@ function paintQueue(){
   const list = $('qList');
   list.innerHTML = '';
   $('qCount').textContent = S.queue.length;
-  $('qEmpty').style.display = S.queue.length ? 'none' : '';
+
+  // Up-next picker sits above the queue while a countdown is running.
+  const picking = !!(S.upnext && S.upnext.length && S.upnextAt);
+  $('qEmpty').style.display = (S.queue.length || picking) ? 'none' : '';
+  if (picking){
+    const head = document.createElement('div');
+    head.className = 'results-head';
+    head.style.padding = '0 2px 4px';
+    const label = document.createElement('span');
+    label.id = 'upnextLabel';
+    label.textContent = 'Up next in ' + upnextLeft() + 's — pick one';
+    head.appendChild(label);
+    if (canControl()){
+      const stop = document.createElement('button');
+      stop.className = 'btn sm ghost'; stop.textContent = 'Stop';
+      stop.onclick = () => { if (isHost){ clearUpNext(true); } else { request('stopnext'); } };
+      head.appendChild(stop);
+    }
+    list.appendChild(head);
+
+    S.upnext.forEach((v, i) => {
+      const el = document.createElement('div');
+      el.className = 'item';
+      if (i === 0) el.style.borderColor = 'var(--accent)';
+      const img = document.createElement('img'); img.src = thumb(v.id); img.loading = 'lazy'; img.alt = '';
+      const m = document.createElement('div'); m.className = 'm';
+      const t = document.createElement('div'); t.textContent = v.title || v.id;
+      const b = document.createElement('div');
+      b.textContent = (i === 0 ? 'plays automatically · ' : '') +
+                      [v.channel, v.seconds ? fmt(v.seconds) : ''].filter(Boolean).join(' · ');
+      m.append(t, b);
+      el.append(img, m);
+      if (canControl()){
+        el.style.cursor = 'pointer';
+        el.onclick = () => playPick(v);
+      }
+      list.appendChild(el);
+    });
+
+    if (S.queue.length){
+      const hr = document.createElement('div');
+      hr.className = 'hr'; hr.textContent = 'queue';
+      list.appendChild(hr);
+    }
+  }
   S.queue.forEach((q, i) => {
     const el = document.createElement('div');
     el.className = 'item';
@@ -1238,9 +1422,18 @@ function paintPeople(){
 }
 function paintRoomSettings(){
   $('everyoneCtl').checked = !!S.everyone;
+  $('autoplayCtl').checked = !!S.autoplay;
   paintRole();
 }
 function paintProgress(){
+  // Countdown first — it runs precisely when playback has stopped.
+  if (S.upnext && S.upnext.length && S.upnextAt){
+    const lbl = $('upnextLabel');
+    if (lbl) lbl.textContent = 'Up next in ' + upnextLeft() + 's — pick one';
+    $('npSub').textContent = 'Up next in ' + upnextLeft() + 's — “' +
+      (S.upnext[0].title || '') + '” (choose another under Queue)';
+    paintUpNext();
+  }
   if (!ytReady || !S.videoId) return;
   const dur = player.getDuration() || 0, cur = player.getCurrentTime() || 0;
   $('tCur').textContent = fmt(cur);

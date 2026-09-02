@@ -27,6 +27,7 @@ No account. No server to run. No API key.
 |---|---|
 | Synced playback | Play, pause, seek and track changes propagate to everyone |
 | YouTube search | Type a query instead of hunting for a link; results show channel and duration |
+| Autoplay radio | When the queue empties, offers similar tracks with a countdown — pick one, or the top one plays itself |
 | Shared queue | Anyone in the room can add videos; the host's player runs the show |
 | Audio-only mode | Hides the video, keeps the sound — for music listening |
 | Chat | Plus join/leave and "X added …" activity messages |
@@ -37,6 +38,22 @@ No account. No server to run. No API key.
 
 Titles for pasted links are resolved through YouTube's public oEmbed endpoint, so
 no API key is needed for those.
+
+### How autoplay picks the next track
+
+Not from YouTube's recommendations — those aren't reachable here. The Data API
+dropped `relatedToVideoId` in 2023, and the keyless mirrors return nothing, an
+error, or generic filler for music videos (measured: 0 related items for one
+music video, HTTP 500 for another, and unrelated clickbait for a third).
+
+So the next track comes from a **search seeded off the current one's artist**.
+The channel name is the most reliable artist signal — `Ex Battalion Music`, or
+`Florante - Topic` — because title word order is inconsistent (`Artist - Song`
+vs `Song - Artist`). Record-label channels are the exception, so those fall back
+to the part of the title before the dash. Candidates exclude the current track,
+anything already played this session, anything queued, and anything under 30s or
+over 25 minutes. Four are offered with a 12-second countdown; the top one plays
+if nobody picks. Turn it off under **People → room settings**.
 
 ### How search works
 
