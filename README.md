@@ -82,8 +82,11 @@ Then visit `http://127.0.0.1:8787/`.
 - **Playlist URLs** (`?list=…`) aren't expanded; add individual videos instead.
 - **Keyless search is unreliable** by nature — if the dropdown says search is
   unavailable, every mirror in the list was down. Add an API key, or paste a link.
-- Videos whose owners disable embedding can't play in any embedded player. The
-  host automatically skips to the next queued track when that happens.
+- **Videos whose owners disable embedding can't play in any embedded player** —
+  common for record-label uploads, which play on youtube.com but refuse to run
+  inside other sites. The stage shows why, with a link to open it on YouTube; the
+  host skips ahead automatically only when something else is queued. Searching the
+  same song and picking a different channel's upload usually works.
 - The sync relay is a **public MQTT broker**: anyone who knows your room code can
   join, and room state passes through a third party. Treat codes as semi-private
   and don't put anything sensitive in chat.

@@ -244,6 +244,17 @@
             <div style="color:var(--dim);font-size:13px;margin-top:4px">Video hidden — sound keeps playing</div>
           </div>
         </div>
+        <div class="gate hide" id="errBox">
+          <div>
+            <div style="font-size:32px;line-height:1;margin-bottom:8px">⚠</div>
+            <h2 id="errTitle">This video won’t play here</h2>
+            <p id="errText"></p>
+            <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+              <a class="btn" id="errOpen" target="_blank" rel="noopener">Open on YouTube ↗</a>
+              <button class="btn ghost" id="errNext">Skip to next</button>
+            </div>
+          </div>
+        </div>
         <div class="gate hide" id="gate">
           <div>
             <h2 id="gateTitle">Ready to join</h2>
@@ -456,10 +467,10 @@ window.onYouTubeIframeAPIReady = function(){
       },
       onStateChange: onPlayerState,
       onError(e){
-        const why = ({2:'bad video id',5:'playback error',100:'video not found / private',
-                      101:'embedding disabled by owner',150:'embedding disabled by owner'})[e.data] || 'error ' + e.data;
-        toast('YouTube: ' + why);
-        if (isHost) setTimeout(nextTrack, 1200);   // don't let the room stall
+        // Say what happened on screen and leave it there. A toast disappears
+        // and leaves a black player with no explanation.
+        showPlayError(e.data, S.videoId);
+        if (isHost && S.queue.length) setTimeout(nextTrack, 2000);   // only skip if there IS a next
       }
     }
   });
@@ -474,7 +485,7 @@ function onPlayerState(e){
   paintPlayIcon();
   // Record "this track really started" even during a load-suppression window,
   // otherwise end-of-track detection never arms.
-  if (e.data === YT.PlayerState.PLAYING) sawPlaying = true;
+  if (e.data === YT.PlayerState.PLAYING){ sawPlaying = true; hidePlayError(); }
   if (applying) return;
 
   if (isHost){
@@ -503,6 +514,7 @@ function reallyEnded(){
 function hardLoad(id, t, play){
   if (!ytReady){ pendingLoad = {id, t, play}; return; }
   applying = true; lastLoadAt = Date.now(); sawPlaying = false;
+  hidePlayError();                                 // fresh track, fresh slate
   if (play && !gated) player.loadVideoById({videoId:id, startSeconds:Math.max(0,t)});
   else               player.cueVideoById({videoId:id, startSeconds:Math.max(0,t)});
   setTimeout(() => { applying = false; }, 1500);   // ride out the old track's tail events
@@ -1032,6 +1044,10 @@ $('addInput').onkeydown = e => {
   if (e.key === 'Escape') hideResults();
 };
 $('resClose').onclick = hideResults;
+$('errNext').onclick  = () => {
+  if (!canControl()) return toast('Host-only mode — ask the host to skip this one');
+  hidePlayError(); nextTrack();
+};
 document.addEventListener('click', e => {          // click away closes the dropdown
   if (!$('results').hidden && !e.target.closest('.addwrap')) hideResults();
 });
@@ -1115,6 +1131,21 @@ $('gateBtn').onclick = () => {
     if (S.videoId) applyState(S, true);
   }
 };
+function showPlayError(code, id){
+  const why = ({
+    2:   'The video id is malformed.',
+    5:   'The player hit an HTML5 playback error.',
+    100: 'The video was removed, or is private.',
+    101: 'The owner of this video does not allow it to be played inside other websites.',
+    150: 'The owner of this video does not allow it to be played inside other websites.'
+  })[code] || ('YouTube reported error ' + code + '.');
+  $('errText').textContent = why + ' It still plays on YouTube itself. Search the same' +
+    ' song again and pick a different upload — another channel usually works.';
+  $('errOpen').href = 'https://www.youtube.com/watch?v=' + (id || '');
+  $('errBox').classList.remove('hide');
+}
+function hidePlayError(){ $('errBox').classList.add('hide'); }
+
 function showGate(title, text){
   gated = true;
   $('gateTitle').textContent = title; $('gateText').textContent = text;
