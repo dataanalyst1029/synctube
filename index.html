@@ -206,12 +206,20 @@
   .switch input{accent-color:var(--accent)}
 
   @media (max-width:900px){
-    main{flex-direction:column}
-    .right{width:auto;flex:1 1 auto;border-left:none;border-top:1px solid var(--line);min-height:44vh}
+    /* Phones: the stacked layout is taller than the screen, so the DOCUMENT has
+       to scroll. Locking body to 100% with overflow:hidden (the desktop shell)
+       clips the overflow instead, and an opening keyboard then scrolls the
+       focused input into that clipped box and strands the player off-screen. */
+    html,body{height:auto;min-height:100%}
+    body{overflow-y:auto;overflow-x:hidden}
+    main{flex-direction:column;min-height:0}
     .left{flex:0 0 auto;overflow:visible}
     /* Stacked layout: the page scrolls, so size the player by width instead. */
-    .stage{flex:0 0 auto;min-height:0;display:block}
+    .stage{flex:0 0 auto;min-height:0;display:block;position:sticky;top:0;z-index:6}
     .stage .ratio{width:100%;height:auto;max-width:none}
+    .right{width:auto;flex:0 0 auto;border-left:none;border-top:1px solid var(--line);min-height:0}
+    .pane{min-height:40vh}
+    #chatlog{min-height:34vh}
     header{gap:8px}
   }
 </style>
