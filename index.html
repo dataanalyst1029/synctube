@@ -940,10 +940,19 @@ async function searchMirrors(q){
   throw new Error('all mirrors unreachable');
 }
 
+let lastSearchSource = '';
 async function searchAny(q){
   const key = (localStorage.getItem('st.ytKey') || '').trim();
-  return key ? await searchOfficial(q, key).catch(() => searchMirrors(q))
-             : await searchMirrors(q);
+  if (key){
+    try{
+      const r = await searchOfficial(q, key);
+      lastSearchSource = 'your API key';
+      return r;
+    }catch{ /* bad key, wrong restriction, or quota spent → fall back quietly */ }
+  }
+  const r = await searchMirrors(q);
+  lastSearchSource = key ? 'public mirror (your key didn’t answer)' : 'public mirror';
+  return r;
 }
 
 let searchSeq = 0;
@@ -953,8 +962,9 @@ async function runSearch(q){
   try{
     const items = await searchAny(q);
     if (seq !== searchSeq) return;            // a newer search already started
-    showResults(items.length ? items.length + ' results for “' + q + '”'
-                             : 'Nothing found for “' + q + '”', items);
+    showResults((items.length ? items.length + ' results for “' + q + '”'
+                              : 'Nothing found for “' + q + '”') +
+                ' · via ' + lastSearchSource, items);
   }catch{
     if (seq !== searchSeq) return;
     showResults('Search is unavailable right now — paste a YouTube link instead', []);
