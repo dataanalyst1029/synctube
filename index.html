@@ -467,7 +467,11 @@ const titleCache = new Map();
    ======================================================================= */
 window.onYouTubeIframeAPIReady = function(){
   player = new YT.Player('player', {
-    host: 'https://www.youtube-nocookie.com',
+    // Standard host, not youtube-nocookie: the privacy-enhanced host withholds
+    // YouTube cookies, so the embed can't see that a viewer is signed in and a
+    // Premium subscription can't apply. Each viewer's own account governs their
+    // own player.
+    host: 'https://www.youtube.com',
     playerVars: {
       autoplay: 0, controls: 1, rel: 0, modestbranding: 1,
       playsinline: 1, iv_load_policy: 3, fs: 1, origin: location.origin
