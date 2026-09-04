@@ -766,7 +766,9 @@ function request(type, data){
   if (isHost) onRequest(msg); else pub('req', msg);
 }
 function onRequest(m){
-  if (!isHost || !m || m.from === cid) return;
+  if (!m || m.from === cid) return;
+  if (m.type === 'grant') return onGrant(m);    // addressed to a guest, not to the host
+  if (!isHost) return;
   const mayControl = S.everyone;
   switch (m.type){
     case 'ping':                                  // clock probe, never a control action
@@ -776,12 +778,16 @@ function onRequest(m){
       if (!m.id) return;
       addToRoom(m.id, m.title || '', m.name || 'Someone', m.channel);
       return;
-    case 'play':   if (!mayControl) return deny(m); player.playVideo();  return;
-    case 'pause':  if (!mayControl) return deny(m); player.pauseVideo(); return;
-    case 'seek':   if (!mayControl) return deny(m); applying = true; player.seekTo(m.t, true);
+    // Player calls are guarded: the request can arrive before our player is
+    // ready, and a throw here would abandon the rest of this message.
+    case 'play':   if (!mayControl) return deny(m); if (ytReady) player.playVideo();  return;
+    case 'pause':  if (!mayControl) return deny(m); if (ytReady) player.pauseVideo(); return;
+    case 'seek':   if (!mayControl) return deny(m); if (!ytReady) return;
+                   applying = true; player.seekTo(m.t, true);
                    setTimeout(()=>{applying=false; publishState();}, 350); return;
     case 'next':   if (!mayControl) return deny(m); nextTrack();  return;
-    case 'restart':if (!mayControl) return deny(m); applying = true; player.seekTo(0,true);
+    case 'restart':if (!mayControl) return deny(m); if (!ytReady) return;
+                   applying = true; player.seekTo(0,true);
                    setTimeout(()=>{applying=false; publishState();}, 350); return;
     case 'pick':     if (!mayControl) return deny(m); playPick(m.item);   return;
     case 'stopnext': if (!mayControl) return deny(m); clearUpNext(true);  return;
@@ -872,6 +878,42 @@ setInterval(() => {
   }
 }, 2000);
 
+/* ---------------------------- deliberate handover ----------------------------
+   The host names a successor. The grant is addressed to that client, because a
+   state message can't do the job: every client ignores state that names someone
+   else's id as host, including the person being promoted. */
+let grantWatch = null;
+function transferHost(id, name){
+  if (!isHost || id === cid) return;
+  const at = Date.now();
+  pub('req', {type:'grant', to:id, from:cid, name:me});
+
+  isHost = false;                              // stop driving immediately
+  S.host = id; S.hostName = name || 'Guest'; S.hostSince = at;
+  localStorage.removeItem('st.hostRoom');      // we gave it away on purpose
+  paintRole(); paintPeople();
+  const text = me + ' made ' + (name || 'a guest') + ' the host';
+  pub('chat', {sys:true, id:cid, text}); sysMsg(text);
+
+  // If they never pick it up (tab closed as we clicked), take the room back
+  // rather than leaving it unattended.
+  clearTimeout(grantWatch);
+  grantWatch = setTimeout(() => {
+    if (!isHost && (!lastHostSeen || lastHostSeen < at)){
+      becomeHost(true);
+      sysMsg('That handover went nowhere — you are host again');
+      toast('Handover failed, you are host again');
+    }
+  }, 8000);
+}
+
+function onGrant(m){
+  if (!m || m.to !== cid || isHost) return;
+  becomeHost(true);
+  sysMsg((m.name || 'The host') + ' made you the host');
+  toast('You are now the host');
+}
+
 /* Pick a successor without anyone having to click: the room's previous host if
    that's us (a refresh), otherwise the lowest client id present, which every
    client computes identically. Whoever doesn't win gets the manual button. */
@@ -888,7 +930,7 @@ function becomeHost(silent){
   hostByeSeen = false; hostLeftAt = 0; hostOfflineNoted = false;
   localStorage.setItem('st.hostRoom', room);        // so our own refresh resumes hosting
   $('claimHost').hidden = true; $('hostState').hidden = true;
-  paintRole(); sendPresence(); publishState();
+  paintRole(); paintPeople(); sendPresence(); publishState();
   if (!silent) sysMsg('You are now the host');
 }
 
@@ -1509,6 +1551,14 @@ function paintPeople(){
     tag.textContent = p.host ? 'host' : '';
     tag.style.color = p.host ? 'var(--warn)' : 'var(--dim)';
     row.append(av, n, tag);
+    // Only the host can hand the role on, and only to somebody else.
+    if (isHost && p.id !== cid && !p.host){
+      const give = document.createElement('button');
+      give.className = 'btn sm ghost'; give.textContent = 'Make host';
+      give.title = 'Hand the room over to ' + p.name;
+      give.onclick = () => transferHost(p.id, p.name);
+      row.appendChild(give);
+    }
     wrap.appendChild(row);
   });
 }
