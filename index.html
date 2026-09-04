@@ -235,6 +235,7 @@
   </div>
   <span class="role" id="roleTag" hidden>guest</span>
   <div class="spacer"></div>
+  <span class="role" id="hostState" hidden style="background:#2b2418;color:var(--warn);border-color:#4a3c1f">host offline — holding</span>
   <button class="btn sm ghost" id="claimHost" hidden>Take over as host</button>
   <button class="btn sm ghost" id="resyncBtn" hidden>Re-sync</button>
   <div class="status" id="status"><span class="led"></span><span id="statusTxt">offline</span></div>
@@ -429,7 +430,14 @@ const ROOT       = 'synctube/v1';
 const BEAT_MS    = 2500;   // host state broadcast interval
 const PRES_MS    = 4000;   // presence ping interval
 const PRES_TTL   = 13000;  // presence expiry
-const HOST_TTL   = 14000;  // no host seen for this long → offer takeover
+/* Host succession. A dropped connection and a closed tab look identical from
+   the outside, so silence alone must never move the host role — a host on bad
+   wifi would lose their room mid-song. Only a stated exit hands over
+   automatically; silence just waits, with a manual button as the last resort
+   for a host whose machine died without saying goodbye. */
+const HOST_GRACE_LEFT   = 3000;    // host said they're leaving → hand over
+const HOST_GRACE_UNSEEN = 30000;   // joined, never saw any host, no exit notice
+const HOST_GRACE_SILENT = 60000;   // host went quiet → offer a manual takeover only
 const DRIFT_LOOSE= 0.6;    // seconds of drift tolerated
 const DRIFT_TIGHT= 0.25;
 const SEEK_LEAD  = 0.2;    // a corrective seek resumes late; aim slightly ahead
@@ -448,7 +456,9 @@ let S = {
   position: 0, at: 0,            // at = host clock ms when position was sampled
   queue: [], everyone: false,
   autoplay: true,                // keep playing similar music when the queue empties
-  upnext: [], upnextAt: 0        // candidates + host-clock deadline for the auto pick
+  upnext: [], upnextAt: 0,       // candidates + host-clock deadline for the auto pick
+  hostSince: 0,                  // when the current host took the role (host clock)
+  hostLeft: false                // host stated they were leaving, not just silent
 };
 
 let mq = null, brokerIx = 0, connected = false, everConnected = false;
@@ -456,6 +466,7 @@ let player = null, ytReady = false, gated = true, pendingLoad = null;
 let offsets = [], clockOffset = 0;      // hostClock ≈ Date.now() + clockOffset
 let pings = [], syncedByPing = false;   // round-trip probes against the host's clock
 let lastHostSeen = 0, joinedAt = 0, applying = false, snapTimer = null;
+let hostByeSeen = false, hostLeftAt = 0, hostOfflineNoted = false;
 let idleEnded = false;                   // current track finished, nothing queued
 let lastLoadAt = 0, sawPlaying = false;  // guards against stale ENDED events
 let people = new Map();                  // cid → {name, host, ts}
@@ -653,12 +664,18 @@ function publishState(){
 function onState(m){
   if (!m || m.host === cid) return;
   lastHostSeen = Date.now();
+  hostByeSeen = false;                   // a host that publishes is plainly still here
   $('claimHost').hidden = true;
+  if (hostOfflineNoted){ hostOfflineNoted = false; $('hostState').hidden = true; }
 
   if (isHost){
-    // Two hosts in one room: lowest client id wins, the other demotes.
-    if (m.host < cid){ isHost = false; paintRole(); sysMsg((m.hostName||'Someone') + ' is now host'); }
-    else return;
+    // Two hosts in one room. The longest-serving one wins, so a host who was
+    // merely disconnected reclaims the room from anyone who took over while
+    // they were away, rather than being demoted for having a bad connection.
+    if (otherHostWins(m)){
+      isHost = false; paintRole();
+      sysMsg((m.hostName || 'Someone') + ' is now host');
+    } else return;
   }
 
   if (m.rev < S.rev && m.host === S.host) return;    // stale
@@ -677,6 +694,15 @@ function onState(m){
   if (prev.host !== S.host && S.hostName) sysMsg(S.hostName + ' is hosting');
   applyState(S, prev.videoId !== S.videoId);
   paintNowPlaying(); paintQueue(); paintRoomSettings(); paintUpNext();
+}
+
+/* Whose host claim stands when two clients both think they're host. Earlier
+   tenure wins; identical or missing tenures fall back to a deterministic
+   comparison so both sides reach the same verdict. */
+function otherHostWins(m){
+  const mine = S.hostSince || 0, theirs = m.hostSince || 0;
+  if (mine && theirs && mine !== theirs) return theirs < mine;
+  return String(m.host) < String(cid);
 }
 
 function targetTime(m){
@@ -771,11 +797,34 @@ function deny(m){
 
 /* ---------------------------- presence ---------------------------- */
 function sendPresence(){ pub('presence', {id:cid, name:me, host:isHost, t:Date.now()}); }
+
+/* A stated exit — the only thing that hands the host role over on its own.
+   Sent on Leave and when the tab goes away; the host also stamps the retained
+   state so people arriving later know the room is unattended. */
+function sendBye(){
+  if (!mq || !connected) return;
+  try{
+    mq.publish(T('presence'), JSON.stringify({id:cid, name:me, host:isHost, bye:true, t:Date.now()}), {qos:0});
+    if (isHost){
+      S.hostLeft = true; S.playing = false; S.at = Date.now(); S.rev++;
+      mq.publish(T('state'), JSON.stringify(S), {qos:0, retain:true});
+    }
+  }catch{}
+}
+
 function onPresence(m){
   if (!m || !m.id || m.id === cid) return;      // ignore our own echo
+  if (m.bye){
+    const who = (people.get(m.id) || {}).name || m.name || 'Someone';
+    people.delete(m.id);
+    if (m.host){ hostByeSeen = true; hostLeftAt = Date.now(); }
+    sysMsg(who + ' left' + (m.host ? ' — the room needs a new host' : ''));
+    paintPeople();
+    return;
+  }
   const isNew = !people.has(m.id);
   people.set(m.id, {name:m.name || 'Guest', host:!!m.host, ts:Date.now()});
-  if (m.host) lastHostSeen = Date.now();
+  if (m.host){ lastHostSeen = Date.now(); hostByeSeen = false; }
   if (isNew){
     sysMsg((m.name || 'Someone') + ' joined');
     if (isHost) { publishState(); sendPresence(); }   // catch the newcomer up immediately
@@ -786,32 +835,59 @@ setInterval(() => {
   const now = Date.now();
   let changed = false;
   for (const [id, p] of people){
-    if (now - p.ts > PRES_TTL){ people.delete(id); changed = true; sysMsg(p.name + ' left'); }
+    // Timing out is not the same as leaving any more — say which it was.
+    if (now - p.ts > PRES_TTL){ people.delete(id); changed = true; sysMsg(p.name + ' lost connection'); }
   }
   if (changed) paintPeople();
 
-  // host disappeared?
+  // ---- host succession -------------------------------------------------
   const hostPresent = [...people.values()].some(p => p.host);
-  // Count from whichever is later: the last sign of a host, or when we arrived.
-  // Without the joinedAt fallback, a room that never had a host stays hostless
-  // forever and every queue request vanishes.
-  const since = Math.max(lastHostSeen, joinedAt);
-  if (!isHost && !hostPresent && since && now - since > HOST_TTL){
-    // Nobody is driving. Pick a successor without anyone having to click:
-    // the room's previous host if that's us (a refresh), otherwise the lowest
-    // client id present, which every client agrees on. The button stays as a
-    // manual fallback for whoever doesn't win.
-    const wasOurRoom = S.hostName && S.hostName === me;
-    const first = [cid, ...people.keys()].sort()[0];
-    if (people.size === 0 || wasOurRoom || first === cid) becomeHost(people.size === 0);
-    else $('claimHost').hidden = false;
+  if (isHost || hostPresent){
+    if (hostOfflineNoted){                      // they came back
+      hostOfflineNoted = false;
+      $('hostState').hidden = true;
+      if (!isHost) sysMsg((S.hostName || 'The host') + ' is back');
+    }
+    $('claimHost').hidden = true;
+    return;
+  }
+
+  const statedExit = hostByeSeen || S.hostLeft;
+  if (statedExit){
+    // The host said goodbye — hand the room on.
+    if (now - (hostLeftAt || lastHostSeen || joinedAt) > HOST_GRACE_LEFT) electHost();
+  } else if (lastHostSeen){
+    // Silence from a host who never said they were going. Could be a lift, a
+    // tunnel, a dead wifi router. Keep their role, keep playing, say so — and
+    // only after a long wait offer a manual takeover for a machine that died.
+    if (!hostOfflineNoted){
+      hostOfflineNoted = true;
+      $('hostState').hidden = false;
+      sysMsg((S.hostName || 'The host') + ' went quiet — holding the room for them');
+    }
+    if (now - lastHostSeen > HOST_GRACE_SILENT) $('claimHost').hidden = false;
+  } else {
+    // We joined and have never seen a host at all: an abandoned room.
+    if (now - joinedAt > HOST_GRACE_UNSEEN) electHost();
   }
 }, 2000);
 
+/* Pick a successor without anyone having to click: the room's previous host if
+   that's us (a refresh), otherwise the lowest client id present, which every
+   client computes identically. Whoever doesn't win gets the manual button. */
+function electHost(){
+  const wasOurRoom = S.hostName && S.hostName === me;
+  const first = [cid, ...people.keys()].sort()[0];
+  if (people.size === 0 || wasOurRoom || first === cid) becomeHost(people.size === 0);
+  else $('claimHost').hidden = false;
+}
+
 function becomeHost(silent){
   isHost = true; S.host = cid; S.hostName = me;
+  S.hostSince = Date.now(); S.hostLeft = false;     // fresh tenure, room is attended again
+  hostByeSeen = false; hostLeftAt = 0; hostOfflineNoted = false;
   localStorage.setItem('st.hostRoom', room);        // so our own refresh resumes hosting
-  $('claimHost').hidden = true;
+  $('claimHost').hidden = true; $('hostState').hidden = true;
   paintRole(); sendPresence(); publishState();
   if (!silent) sysMsg('You are now the host');
 }
@@ -1266,9 +1342,11 @@ $('renameBtn').onclick = () => {
   sendPresence(); if (isHost) publishState(); paintPeople();
 };
 $('leaveBtn').onclick = () => {
+  sendBye();                                   // tell the room before we go
+  localStorage.removeItem('st.hostRoom');      // don't reclaim a room we walked out of
   // Drop the room code so the reload lands on the join screen instead of auto-rejoining.
   history.replaceState(null, '', location.pathname);
-  location.reload();
+  setTimeout(() => location.reload(), 250);    // let the goodbye flush
 };
 $('copyLink').onclick = async () => {
   const url = location.origin + location.pathname + '#' + room;
@@ -1466,12 +1544,11 @@ setInterval(sendPing, PING_MS);
 setInterval(paintProgress, 400);
 setInterval(() => { if (!isHost && S.videoId && S.playing) applyState(S, false); }, 3000);
 
-window.addEventListener('beforeunload', () => {
-  if (isHost && mq && connected){
-    // Hand the room a final snapshot marked paused so nobody spins forever.
-    try { S.playing = false; S.at = Date.now(); S.rev++; mq.publish(T('state'), JSON.stringify(S), {qos:0, retain:true}); } catch {}
-  }
-});
+// pagehide fires where beforeunload doesn't (notably mobile Safari), and both
+// are best-effort: a killed process says nothing, which is what the long
+// silent-host grace is for.
+window.addEventListener('beforeunload', sendBye);
+window.addEventListener('pagehide', sendBye);
 
 /* =======================================================================
    Boot
